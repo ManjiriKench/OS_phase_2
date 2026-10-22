@@ -1,0 +1,87 @@
+====================================================================================
+        PROJECT 31: THREAD AFFINITY MANAGEMENT BENCHMARK REPORT
+                 Phase 1 Prototype Experimental Results
+====================================================================================
+Report Date: 2026-10-22 19:09:00
+
+--- HARDWARE TOPOLOGY SPECIFICATIONS ---
+Physical CPU Cores   : 8
+Logical Processors   : 12
+Logical Processor IDs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+Physical-to-Logical Core Mapping:
+  Physical Core  0 -> Logical Processors [0, 1]
+  Physical Core  1 -> Logical Processors [2, 3]
+  Physical Core  2 -> Logical Processors [4, 5]
+  Physical Core  3 -> Logical Processors [6, 7]
+  Physical Core  4 -> Logical Processors [8]
+  Physical Core  5 -> Logical Processors [9]
+  Physical Core  6 -> Logical Processors [10]
+  Physical Core  7 -> Logical Processors [11]
+
+--- CONFIGURATION SUMMARY (STATISTICAL AGGREGATION) ---
+Configuration  | Threads | Runs  | Avg Time (s) | Min (s)   | Max (s)   | StdDev (s) | Target CPU %
+------------------------------------------------------------------------------------
+BASELINE       | 2       | 5     | 0.5627       | 0.5443    | 0.5967    | 0.0228     | 26.8       %
+DISTRIBUTED    | 2       | 5     | 0.5712       | 0.5623    | 0.5866    | 0.0102     | 99.8       %
+FIXED          | 2       | 5     | 0.8070       | 0.7989    | 0.8127    | 0.0062     | 97.3       %
+CONCENTRATED   | 2       | 5     | 0.8087       | 0.7970    | 0.8290    | 0.0132     | 97.7       %
+------------------------------------------------------------------------------------
+
+Fastest observed configuration : BASELINE (Avg: 0.5627s)
+Slowest observed configuration : CONCENTRATED (Avg: 0.8087s)
+Observed Performance Ratio    : 1.44x between slowest and fastest
+
+--- ADVANCED STATISTICAL ANALYSIS & PERCENTILES ---
+Configuration  | Mean (s)   | Median P50  | P90 (s)   | P99 (s)   | Variance (s^2)  | StdDev (s) | 95% CI of Mean
+--------------------------------------------------------------------------------------------
+BASELINE       | 0.5627     | 0.5519      | 0.5883    | 0.5958    | 0.000522        | 0.0228     | [0.5344, 0.5911]
+DISTRIBUTED    | 0.5712     | 0.5668      | 0.5825    | 0.5862    | 0.000104        | 0.0102     | [0.5585, 0.5838]
+FIXED          | 0.8070     | 0.8084      | 0.8126    | 0.8127    | 0.000038        | 0.0062     | [0.7993, 0.8146]
+CONCENTRATED   | 0.8087     | 0.8026      | 0.8234    | 0.8285    | 0.000175        | 0.0132     | [0.7923, 0.8251]
+--------------------------------------------------------------------------------------------
+Statistical Methodology & Dispersion Notes:
+  - Percentiles (P50, P90, P99) calculated via standard linear rank interpolation.
+  - Sample Variance (s^2) and Sample StdDev (s) use Bessel's correction (N - 1 df).
+  - 95% Confidence Intervals are computed using Student's t-distribution (df = N - 1).
+    Assumptions: independent repeated runs under identical nominal load with
+    approximately normally distributed wall-clock variation.
+
+Throughput Rates (Measurable Operations):
+  * BASELINE: 10662.06 hashes/s
+  * DISTRIBUTED: 10505.02 hashes/s
+  * FIXED: 7435.21 hashes/s
+  * CONCENTRATED: 7419.26 hashes/s
+
+--- INDIVIDUAL RUN EXECUTION LOGS ---
+[BASELINE Run 1] Time: 0.5451s | System CPU: 26.8% | Target CPU: 26.8%
+[BASELINE Run 2] Time: 0.5967s | System CPU: 29.0% | Target CPU: 29.0%
+[BASELINE Run 3] Time: 0.5443s | System CPU: 21.5% | Target CPU: 21.5%
+[BASELINE Run 4] Time: 0.5757s | System CPU: 29.2% | Target CPU: 29.2%
+[BASELINE Run 5] Time: 0.5519s | System CPU: 27.3% | Target CPU: 27.3%
+[FIXED Run 1] Time: 0.8126s | System CPU: 23.6% | Target CPU: 95.5%
+[FIXED Run 2] Time: 0.8023s | System CPU: 20.1% | Target CPU: 95.7%
+[FIXED Run 3] Time: 0.7989s | System CPU: 21.6% | Target CPU: 98.4%
+[FIXED Run 4] Time: 0.8084s | System CPU: 26.0% | Target CPU: 98.4%
+[FIXED Run 5] Time: 0.8127s | System CPU: 26.5% | Target CPU: 98.4%
+[DISTRIBUTED Run 1] Time: 0.5866s | System CPU: 30.7% | Target CPU: 98.8%
+[DISTRIBUTED Run 2] Time: 0.5668s | System CPU: 21.4% | Target CPU: 100.0%
+[DISTRIBUTED Run 3] Time: 0.5762s | System CPU: 25.6% | Target CPU: 100.0%
+[DISTRIBUTED Run 4] Time: 0.5623s | System CPU: 26.6% | Target CPU: 100.0%
+[DISTRIBUTED Run 5] Time: 0.5638s | System CPU: 22.6% | Target CPU: 100.0%
+[CONCENTRATED Run 1] Time: 0.8000s | System CPU: 25.5% | Target CPU: 100.0%
+[CONCENTRATED Run 2] Time: 0.7970s | System CPU: 31.8% | Target CPU: 99.2%
+[CONCENTRATED Run 3] Time: 0.8149s | System CPU: 42.6% | Target CPU: 94.0%
+[CONCENTRATED Run 4] Time: 0.8026s | System CPU: 26.3% | Target CPU: 99.1%
+[CONCENTRATED Run 5] Time: 0.8290s | System CPU: 30.4% | Target CPU: 96.2%
+
+--- ACADEMIC OBSERVATIONS ---
+1. Execution time and per-core CPU utilization varied systematically across affinity settings.
+2. Concentrated placement confined threads to a restricted core subset, resulting in increased
+   observed execution duration and localized core saturation.
+3. Distributed placement separated threads across different logical processor IDs.
+4. Conclusions are bounded to the measured execution times and CPU utilization on this platform;
+   cache miss rates and kernel context switches were not directly instrumented.
+
+====================================================================================
+End of Report.
+====================================================================================

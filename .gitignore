@@ -1,0 +1,9 @@
+os-project_final/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+venv/
+.venv/
+.pytest_cache/
