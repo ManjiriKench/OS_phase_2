@@ -17,6 +17,9 @@ from affinity_manager import (
     AffinityConfiguration,
     build_affinity_mask,
     generate_thread_affinity_mapping,
+    validate_affinity_mask,
+    verify_distinct_mappings,
+    validate_all_affinity_configurations,
 )
 
 
@@ -254,5 +257,54 @@ class TestBuildAffinityMask(unittest.TestCase):
         self.assertEqual(build_affinity_mask([]), 0)
 
 
+class TestAffinityMaskValidation(unittest.TestCase):
+    """Validation of affinity bitmasks against assigned core IDs."""
+
+    def test_valid_mask(self):
+        self.assertTrue(validate_affinity_mask([0, 2], 5, [0, 1, 2, 3]))
+
+    def test_mask_mismatch(self):
+        with self.assertRaises(Exception):
+            validate_affinity_mask([0, 1], 5)  # 5 is 0b101 (cores 0, 2), not cores 0, 1
+
+    def test_negative_mask(self):
+        with self.assertRaises(Exception):
+            validate_affinity_mask([0], -1)
+
+    def test_core_outside_available_cores(self):
+        with self.assertRaises(Exception):
+            validate_affinity_mask([5], 32, available_core_ids=[0, 1, 2, 3])
+
+
+class TestDistinctMappingsVerification(unittest.TestCase):
+    """Verification that FIXED and DISTRIBUTED use distinct mappings."""
+
+    def test_distinct_mappings_standard_topology(self):
+        """12 cores, 4 threads must produce distinct mappings."""
+        cores = list(range(12))
+        self.assertTrue(verify_distinct_mappings(4, cores))
+
+    def test_distinct_mappings_8_cores(self):
+        """8 cores, 4 threads must produce distinct mappings."""
+        cores = list(range(8))
+        self.assertTrue(verify_distinct_mappings(4, cores))
+
+    def test_distinct_mappings_equal_threads_cores(self):
+        """4 cores, 4 threads must produce distinct mappings."""
+        cores = list(range(4))
+        self.assertTrue(verify_distinct_mappings(4, cores))
+
+    def test_validate_all_affinity_configurations(self):
+        """Pre-flight check validates all four configurations."""
+        cores = list(range(8))
+        mappings = validate_all_affinity_configurations(4, cores)
+        self.assertIn("baseline", mappings)
+        self.assertIn("fixed", mappings)
+        self.assertIn("distributed", mappings)
+        self.assertIn("concentrated", mappings)
+        self.assertNotEqual(mappings["fixed"], mappings["distributed"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

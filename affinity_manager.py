@@ -21,8 +21,9 @@ from __future__ import annotations
 import ctypes
 import sys
 from ctypes import wintypes
+from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +42,19 @@ class AffinityConfiguration(Enum):
 class AffinityError(Exception):
     """Raised when thread affinity cannot be applied or verified."""
     pass
+
+
+@dataclass
+class AffinityVerificationReport:
+    """Detailed record of thread affinity assignment and verification status."""
+    thread_name: str
+    thread_index: int
+    assigned_cores: List[int]
+    expected_mask: int
+    actual_mask: Optional[int]
+    verified: bool
+    status: str
+    error_message: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -94,21 +108,40 @@ def generate_thread_affinity_mapping(
         # so worker threads are separated across distinct processor regions.
         total_cores = len(available_core_ids)
         if thread_count < total_cores:
-            # Spread threads evenly across the available core ID range
-            stride = max(1, total_cores // thread_count)
-            return {
-                i: [available_core_ids[(i * stride) % total_cores]]
-                for i in range(thread_count)
-            }
-        elif thread_count == total_cores and total_cores > 2:
-            # When thread_count == total_cores, disperse by interleaving
-            # (primary cores and secondary threads) so that FIXED != DISTRIBUTED
-            even_cores = [available_core_ids[k] for k in range(0, total_cores, 2)]
-            odd_cores = [available_core_ids[k] for k in range(1, total_cores, 2)]
-            dispersed = even_cores + odd_cores
-            return {i: [dispersed[i]] for i in range(thread_count)}
+            stride = total_cores // thread_count
+            if stride > 1:
+                return {
+                    i: [available_core_ids[(i * stride) % total_cores]]
+                    for i in range(thread_count)
+                }
+            else:
+                # When stride is 1 and thread_count > 1, spread across both ends
+                # to guarantee distinct placement from sequential FIXED.
+                indices = [
+                    int(round(i * (total_cores - 1) / (thread_count - 1)))
+                    for i in range(thread_count)
+                ]
+                return {
+                    i: [available_core_ids[indices[i]]]
+                    for i in range(thread_count)
+                }
+        elif thread_count == total_cores:
+            if total_cores > 2:
+                # Disperse by interleaving even and odd core indices
+                even_cores = [available_core_ids[k] for k in range(0, total_cores, 2)]
+                odd_cores = [available_core_ids[k] for k in range(1, total_cores, 2)]
+                dispersed = even_cores + odd_cores
+                return {i: [dispersed[i]] for i in range(thread_count)}
+            elif total_cores == 2:
+                # Reverse assignment so FIXED (0->c0, 1->c1) != DISTRIBUTED (0->c1, 1->c0)
+                return {
+                    0: [available_core_ids[1]],
+                    1: [available_core_ids[0]],
+                }
+            else:
+                return {0: [available_core_ids[0]]}
         else:
-            # When thread_count >= total_cores, round-robin with stride offset
+            # When thread_count > total_cores, round-robin with stride offset
             stride = max(1, total_cores // 2) if total_cores > 1 else 1
             return {
                 i: [available_core_ids[(i * stride) % total_cores]]
@@ -143,6 +176,135 @@ def build_affinity_mask(core_ids: List[int]) -> int:
     for core_id in core_ids:
         mask |= (1 << core_id)
     return mask
+
+
+def validate_affinity_mask(
+    core_ids: List[int],
+    mask: int,
+    available_core_ids: Optional[List[int]] = None,
+) -> bool:
+    """
+    Validate that an affinity mask accurately represents the assigned core IDs.
+
+    Checks:
+    1. The computed bitmask of core_ids matches mask exactly.
+    2. Every core ID in core_ids is in available_core_ids (if provided).
+    3. No unexpected bits are enabled in the mask.
+
+    Args:
+        core_ids: List of logical processor IDs assigned to the thread.
+        mask: The integer bitmask to validate.
+        available_core_ids: Optional list of valid logical processor IDs on the system.
+
+    Returns:
+        bool: True if the mask is valid.
+
+    Raises:
+        AffinityError: If any validation check fails.
+    """
+    if mask < 0:
+        raise AffinityError(f"Affinity mask cannot be negative: {mask}")
+
+    expected_mask = build_affinity_mask(core_ids)
+    if mask != expected_mask:
+        raise AffinityError(
+            f"Affinity mask mismatch: given {mask:#x} ({bin(mask)}), "
+            f"expected {expected_mask:#x} ({bin(expected_mask)}) for cores {core_ids}"
+        )
+
+    if available_core_ids is not None:
+        valid_set = set(available_core_ids)
+        for core_id in core_ids:
+            if core_id not in valid_set:
+                raise AffinityError(
+                    f"Core ID {core_id} in mask {mask:#x} is not within valid logical processor IDs {available_core_ids}"
+                )
+
+    return True
+
+
+def verify_distinct_mappings(
+    thread_count: int,
+    available_core_ids: List[int],
+) -> bool:
+    """
+    Verify that FIXED and DISTRIBUTED produce distinct logical-processor mappings.
+
+    Requirement:
+    Ensures that FIXED and DISTRIBUTED use their intended, distinct logical-processor
+    mappings whenever thread_count > 1 and len(available_core_ids) > 1.
+
+    Args:
+        thread_count: Number of worker threads.
+        available_core_ids: List of available logical processor IDs.
+
+    Returns:
+        bool: True if mappings are distinct.
+
+    Raises:
+        AffinityError: If FIXED and DISTRIBUTED produce identical mappings.
+    """
+    if thread_count <= 1 or len(available_core_ids) <= 1:
+        # On single thread or single core, distinct placement is mathematically impossible
+        return True
+
+    if thread_count > len(available_core_ids):
+        # FIXED is not applicable when threads > cores (raises ValueError)
+        return True
+
+    fixed = generate_thread_affinity_mapping(
+        AffinityConfiguration.FIXED, thread_count, available_core_ids
+    )
+    dist = generate_thread_affinity_mapping(
+        AffinityConfiguration.DISTRIBUTED, thread_count, available_core_ids
+    )
+
+    if fixed == dist:
+        raise AffinityError(
+            f"FIXED and DISTRIBUTED produced identical thread mappings for "
+            f"{thread_count} threads across cores {available_core_ids}: {fixed}"
+        )
+
+    return True
+
+
+def validate_all_affinity_configurations(
+    thread_count: int,
+    available_core_ids: List[int],
+) -> Dict[str, Dict[int, List[int]]]:
+    """
+    Pre-flight validation for all four affinity configurations.
+
+    Validates:
+    1. Mapping generation for BASELINE, FIXED, DISTRIBUTED, and CONCENTRATED.
+    2. FIXED and DISTRIBUTED have distinct mappings.
+    3. Every thread's core assignment produces a valid bitmask.
+    4. All assigned core IDs exist in available_core_ids.
+
+    Returns:
+        Dict mapping configuration names to their verified thread mappings.
+    """
+    mappings: Dict[str, Dict[int, List[int]]] = {}
+
+    for config in AffinityConfiguration:
+        if config == AffinityConfiguration.FIXED and thread_count > len(available_core_ids):
+            # FIXED is skipped if threads > cores
+            continue
+
+        mapping = generate_thread_affinity_mapping(
+            config, thread_count, available_core_ids
+        )
+
+        for thread_idx, cores in mapping.items():
+            mask = build_affinity_mask(cores)
+            validate_affinity_mask(cores, mask, available_core_ids)
+
+        mappings[config.value] = mapping
+
+    if AffinityConfiguration.FIXED.value in mappings and AffinityConfiguration.DISTRIBUTED.value in mappings:
+        verify_distinct_mappings(thread_count, available_core_ids)
+
+    return mappings
 
 
 def display_affinity_mapping(
@@ -356,3 +518,104 @@ def verify_thread_affinity(
             f"(SetThreadAffinityMask returned 0 for mask {expected_mask:#x})"
         )
         return False
+
+
+def verify_thread_affinity_detailed(
+    expected_core_ids: List[int],
+    available_core_ids: List[int],
+    thread_name: str = "worker",
+    thread_index: int = 0,
+    set_return_value: int = 0,
+) -> AffinityVerificationReport:
+    """
+    Detailed verification of thread affinity returning a structured report.
+
+    Provides complete diagnostics:
+    - Expected affinity bitmask
+    - Actual read-back mask (or fallback verification status)
+    - Verification outcome ("Verified", "Mismatch", "Failed", "OS Scheduled")
+    - Informative error message on failure
+    """
+    if not expected_core_ids:
+        return AffinityVerificationReport(
+            thread_name=thread_name,
+            thread_index=thread_index,
+            assigned_cores=[],
+            expected_mask=0,
+            actual_mask=None,
+            verified=True,
+            status="OS Scheduled",
+            error_message=None,
+        )
+
+    expected_mask = build_affinity_mask(expected_core_ids)
+    if not _IS_WINDOWS:
+        return AffinityVerificationReport(
+            thread_name=thread_name,
+            thread_index=thread_index,
+            assigned_cores=expected_core_ids,
+            expected_mask=expected_mask,
+            actual_mask=None,
+            verified=False,
+            status="Failed",
+            error_message="Non-Windows platform: SetThreadAffinityMask unavailable",
+        )
+
+    if _GET_THREAD_AFFINITY_AVAILABLE:
+        try:
+            handle = _kernel32.GetCurrentThread()
+            process_affinity = ctypes.c_size_t(0)
+            thread_affinity = ctypes.c_size_t(0)
+            result = _kernel32.GetThreadAffinityMask(
+                handle,
+                ctypes.byref(process_affinity),
+                ctypes.byref(thread_affinity),
+            )
+            if result == 0:
+                err = ctypes.get_last_error()
+                return AffinityVerificationReport(
+                    thread_name=thread_name,
+                    thread_index=thread_index,
+                    assigned_cores=expected_core_ids,
+                    expected_mask=expected_mask,
+                    actual_mask=None,
+                    verified=False,
+                    status="Failed",
+                    error_message=f"GetThreadAffinityMask error {err}",
+                )
+            actual = thread_affinity.value
+            matches = (actual == expected_mask)
+            return AffinityVerificationReport(
+                thread_name=thread_name,
+                thread_index=thread_index,
+                assigned_cores=expected_core_ids,
+                expected_mask=expected_mask,
+                actual_mask=actual,
+                verified=matches,
+                status="Verified" if matches else "Mismatch",
+                error_message=None if matches else f"Mask mismatch: expected {expected_mask:#x}, got {actual:#x}",
+            )
+        except Exception as exc:
+            return AffinityVerificationReport(
+                thread_name=thread_name,
+                thread_index=thread_index,
+                assigned_cores=expected_core_ids,
+                expected_mask=expected_mask,
+                actual_mask=None,
+                verified=False,
+                status="Failed",
+                error_message=str(exc),
+            )
+
+    # Fallback via set_return_value
+    success = (set_return_value != 0)
+    return AffinityVerificationReport(
+        thread_name=thread_name,
+        thread_index=thread_index,
+        assigned_cores=expected_core_ids,
+        expected_mask=expected_mask,
+        actual_mask=None,
+        verified=success,
+        status="Verified" if success else "Failed",
+        error_message=None if success else "SetThreadAffinityMask returned 0",
+    )

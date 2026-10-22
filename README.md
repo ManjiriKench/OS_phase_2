@@ -17,23 +17,29 @@ This project implements a comprehensive thread affinity management system demons
 - **Responsibilities**: `RunMetrics`/`ConfigurationSummary` dataclasses, `PerformanceMonitor` context manager, CSV/TXT export, comparative summaries
 - **Deliverable**: `metrics.py`, `display.py` with full export functionality
 
-### Person 3 — Core Affinity & Threading
-- **Module 1**: CPU hardware topology detection with physical/logical core mapping
-- **Module 2**: Worker thread creation and lifecycle management
-- **Module 4**: 4 affinity configurations (Baseline, Fixed, Distributed, Concentrated)
-- **Responsibilities**: `generate_thread_affinity_mapping`, `apply_thread_affinity`/`verify_thread_affinity` via Windows ctypes, `ThreadManager`
-- **Deliverable**: `affinity_manager.py`, `cpu_detection.py`, `thread_manager.py`
+### Person 3 — Affinity Strategy, Validation, and Integration (Phase 2 Deliverable)
+- **Module 4 & Strategy Engine**:
+  - `affinity_manager.py`: Pre-flight mask validation (`validate_affinity_mask`), strict verification that FIXED and DISTRIBUTED mappings remain distinct (`verify_distinct_mappings`), and structured verification reporting (`verify_thread_affinity_detailed`).
+  - `strategy.py`: Explainable rule-based affinity recommender (`recommend_affinity_strategy`) based on hardware topology, thread-to-core ratios, compute characteristics, and anti-pattern bottleneck detection (`CONCENTRATED`).
+  - Empirical cross-workload validation engine (`evaluate_validation_results`) comparing recommendations against BASELINE and all configurations.
+  - End-to-end integration into `main.py` with `--recommend`, `--validate-strategy`, and `--verify-affinity` CLI flags.
+  - Comprehensive unit test suite in `test_strategy.py` and enhanced `test_affinity_manager.py`.
 
 ## Project Structure
 
 ```
 project/
-├── main.py                  # Entry point, runs all 4 configurations
+├── main.py                  # Entry point: runs benchmarks, recommendation & validation
 ├── cpu_detection.py         # Module 1: CPU hardware topology detection
-├── workload.py              # Module 3: CPU-intensive workload engine
-├── affinity_manager.py      # Module 4: Thread affinity management
-├── metrics.py               # Module 5: Performance measurement
-└── display.py               # Module 6: Results display & output
+├── thread_manager.py        # Module 2: Worker thread management & synchronization
+├── workload.py              # Module 3: CPU-intensive workload engine (Person 1)
+├── affinity_manager.py      # Module 4: Thread affinity & mask validation (Person 3)
+├── metrics.py               # Module 5: Performance measurement & stats (Person 2)
+├── display.py               # Module 6: Results display, charts & reports (Person 2)
+├── strategy.py              # Phase 2: Explainable Strategy Recommender & Validator (Person 3)
+├── test_affinity_manager.py # Unit tests for affinity manager & mask validation
+├── test_strategy.py         # Unit tests for strategy recommender & validation
+└── test_modules_5_and_6.py  # Unit tests for metrics, display & workload
 ```
 
 ## Getting Started
@@ -42,11 +48,21 @@ project/
 - Python 3.8+
 - `psutil` package: `pip install psutil`
 
-### Running the Benchmark
+### Running the Benchmark & Strategy Engine
 
 ```bash
-# Run default benchmark (all configs, 3 runs, crypto hash workload)
+# Run default benchmark suite (all configs, 3 runs, recommendation & validation)
 python main.py
+
+# Pre-flight affinity validation (verifies bitmasks and distinct thread mappings)
+python main.py --verify-affinity
+
+# Explainable rule-based strategy recommendation (analyzes topology & workload)
+python main.py --recommend
+python main.py 4 --workload prime_sieve --recommend
+
+# Cross-workload strategy validation (calibrates on workload A, validates on workload B)
+python main.py 4 --validate-strategy --runs 3
 
 # Run with 4 threads, 5 repetitions, matrix multiply workload
 python main.py 4 --runs 5 --workload matrix_mult
@@ -69,6 +85,10 @@ python main.py 4 --runs 2 --csv my_results.csv --report my_report.txt
 | `--intensity` | auto | Override workload iterations/size/limit |
 | `--csv` | `affinity_benchmark_results.csv` | CSV output path |
 | `--report` | `affinity_benchmark_report.txt` | TXT report path |
+| `--plot-dir` | None | Directory to export comparison PNG charts |
+| `--recommend` | False | Run explainable rule-based strategy recommendation |
+| `--validate-strategy` | False | Validate recommended strategy across distinct workloads |
+| `--verify-affinity` | False | Perform pre-flight bitmask and distinct mapping validation |
 
 ## Configuration Details
 

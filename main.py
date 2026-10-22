@@ -108,6 +108,21 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help="Optional directory to save benchmark visualization charts (e.g. --plot-dir charts/)",
     )
+    parser.add_argument(
+        "--recommend",
+        action="store_true",
+        help="Run explainable rule-based affinity strategy recommendation",
+    )
+    parser.add_argument(
+        "--validate-strategy",
+        action="store_true",
+        help="Validate the recommended strategy across distinct workloads (e.g. crypto_hash vs matrix_mult)",
+    )
+    parser.add_argument(
+        "--verify-affinity",
+        action="store_true",
+        help="Perform pre-flight validation of affinity mappings and bitmasks across all configurations",
+    )
     return parser.parse_args()
 
 
@@ -117,10 +132,14 @@ from affinity_manager import (
     AffinityConfiguration,
     AffinityError,
     apply_thread_affinity,
+    build_affinity_mask,
     display_affinity_mapping,
     generate_thread_affinity_mapping,
     is_windows,
     verify_thread_affinity,
+    validate_affinity_mask,
+    verify_distinct_mappings,
+    validate_all_affinity_configurations,
 )
 from workload import get_workload_function, WorkloadType
 from metrics import (
@@ -137,6 +156,12 @@ from display import (
     export_summary_to_csv,
     export_results_to_txt,
     generate_benchmark_charts,
+)
+from strategy import (
+    recommend_affinity_strategy,
+    display_strategy_recommendation,
+    evaluate_validation_results,
+    display_validation_report,
 )
 
 
@@ -369,14 +394,60 @@ def main() -> None:
     _print_platform_warning()
 
     # ==========================================
-    # STEP 2: MODULE 3 - Workload Engine Setup
+    # STEP 2: MODULE 4 PRE-FLIGHT AFFINITY VALIDATION
+    # ==========================================
+    logger.info("Performing pre-flight affinity configuration and mask validation...")
+    try:
+        validated_mappings = validate_all_affinity_configurations(
+            thread_count=num_threads,
+            available_core_ids=available_core_ids,
+        )
+        logger.info(
+            f"[+] Pre-flight affinity validation PASSED for {len(validated_mappings)} configurations. "
+            "FIXED and DISTRIBUTED mappings verified distinct."
+        )
+    except Exception as exc:
+        logger.error(f"[!] Pre-flight affinity validation FAILED: {exc}")
+        if args.verify_affinity:
+            sys.exit(1)
+
+    if args.verify_affinity:
+        print("\n" + "=" * 70)
+        print("          PRE-FLIGHT AFFINITY VALIDATION REPORT")
+        print("=" * 70)
+        for cfg_name, mapping in validated_mappings.items():
+            print(f"  Configuration: {cfg_name.upper()}")
+            for t_idx, cores in mapping.items():
+                mask = build_affinity_mask(cores)
+                core_label = ", ".join(str(c) for c in cores) if cores else "OS Scheduler"
+                print(f"    Thread {t_idx} -> Cores [{core_label}] (Mask: {mask:#x})")
+        print("=" * 70 + "\n")
+        print("[+] All affinity masks and distinct thread mappings verified successfully.\n")
+        return
+
+    # ==========================================
+    # STEP 3: MODULE 3 - Workload Engine Setup
     # ==========================================
     workload_type = WorkloadType(args.workload)
     workload_func = get_workload_function(workload_type, intensity=args.intensity)
     logger.info(f"Workload Engine : {workload_type.value.upper()} (Deterministic CPU compute)")
 
     # ==========================================
-    # STEP 3: SELECT CONFIGURATIONS TO EXECUTE
+    # STEP 4: STRATEGY RECOMMENDER (PERSON 3)
+    # ==========================================
+    recommendation = recommend_affinity_strategy(
+        cpu_info=cpu_info,
+        thread_count=num_threads,
+        workload_type=workload_type.value,
+    )
+    display_strategy_recommendation(recommendation)
+
+    if args.recommend and not args.validate_strategy:
+        # Exit early if user explicitly requested the recommendation
+        return
+
+    # ==========================================
+    # STEP 5: SELECT CONFIGURATIONS TO EXECUTE
     # ==========================================
     if args.affinity == "all":
         configs_to_run = [
@@ -399,7 +470,7 @@ def main() -> None:
     logger.info(f"Logical IDs     : {len(available_core_ids)} available\n")
 
     # ==========================================
-    # STEP 4: EXECUTION PIPELINE (MODULES 4, 5, 6)
+    # STEP 6: EXECUTION PIPELINE (MODULES 4, 5, 6)
     # ==========================================
     all_summaries: List[ConfigurationSummary] = []
     all_individual_runs: List[RunMetrics] = []
@@ -423,7 +494,58 @@ def main() -> None:
             logger.error(f"Execution failed for {config.value}: {exc}", exc_info=True)
 
     # ==========================================
-    # STEP 5: COMPARATIVE SUMMARY & EXPORT (MODULE 6)
+    # STEP 7: STRATEGY VALIDATION (CROSS-WORKLOAD)
+    # ==========================================
+    val_report = None
+    if args.validate_strategy and len(all_summaries) > 1:
+        # Determine secondary validation workload
+        val_workload_type = (
+            WorkloadType.MATRIX_MULT
+            if workload_type == WorkloadType.CRYPTO_HASH
+            else WorkloadType.CRYPTO_HASH
+        )
+        logger.info(f"\n>>> EXECUTING STRATEGY VALIDATION BENCHMARK ON: {val_workload_type.value.upper()} <<<")
+        val_workload_func = get_workload_function(val_workload_type, intensity=None)
+        val_summaries: List[ConfigurationSummary] = []
+
+        for config in configs_to_run:
+            try:
+                v_summary = run_configuration_benchmark(
+                    config=config,
+                    num_threads=num_threads,
+                    available_core_ids=available_core_ids,
+                    workload_func=val_workload_func,
+                    num_runs=max(2, num_runs - 1),
+                    physical_core_count=physical_count,
+                    workload_name=val_workload_type.value,
+                    intensity=None,
+                )
+                val_summaries.append(v_summary)
+                all_individual_runs.extend(v_summary.runs)
+                time.sleep(0.3)
+            except Exception as exc:
+                logger.error(f"Validation run failed for {config.value}: {exc}", exc_info=True)
+
+        if len(val_summaries) > 1:
+            val_report = evaluate_validation_results(
+                recommended_config=recommendation.recommended_configuration,
+                calibration_workload=workload_type.value,
+                validation_workload=val_workload_type.value,
+                summaries=val_summaries,
+            )
+            display_validation_report(val_report)
+    elif len(all_summaries) > 1:
+        # Evaluate recommendation directly on current run
+        val_report = evaluate_validation_results(
+            recommended_config=recommendation.recommended_configuration,
+            calibration_workload=workload_type.value,
+            validation_workload=workload_type.value,
+            summaries=all_summaries,
+        )
+        display_validation_report(val_report)
+
+    # ==========================================
+    # STEP 8: COMPARATIVE SUMMARY & EXPORT (MODULE 6)
     # ==========================================
     if len(all_summaries) > 1:
         display_comparison_summary(all_summaries)
@@ -443,6 +565,24 @@ def main() -> None:
             cpu_details=cpu_info,
         )
 
+        # Append strategy recommendation and validation findings to report
+        if val_report:
+            try:
+                with open(args.report, "a", encoding="utf-8") as rf:
+                    rf.write("\n" + "=" * 84 + "\n")
+                    rf.write("--- AFFINITY STRATEGY RECOMMENDATION & EMPIRICAL VALIDATION (PHASE 2) ---\n")
+                    rf.write(f"Recommended Strategy        : {recommendation.recommended_configuration.value.upper()}\n")
+                    rf.write(f"Primary Rule                : {recommendation.primary_rule}\n")
+                    rf.write(f"Confidence                  : {recommendation.confidence}\n")
+                    rf.write(f"Plain-Language Rationale    : {recommendation.plain_language_rationale}\n")
+                    rf.write(f"Bottleneck Anti-Pattern     : {recommendation.expected_bottleneck_config.value.upper()}\n")
+                    rf.write(f"Validation Outcome          : {val_report.outcome.value}\n")
+                    rf.write(f"Validation Speedup vs Base  : {val_report.speedup_vs_baseline:.2f}x\n")
+                    rf.write(f"Validation Verdict          : {val_report.verdict}\n")
+                    rf.write("=" * 84 + "\n")
+            except Exception as e:
+                logger.warning(f"Could not append strategy findings to report: {e}")
+
     # Optional graphical chart generation
     if args.plot_dir and all_summaries:
         try:
@@ -458,7 +598,7 @@ def main() -> None:
         except Exception as exc:
             logger.error(f"Failed to generate benchmark charts: {exc}", exc_info=True)
 
-    logger.info("\n[+] Project 31 Phase 1 pipeline finished cleanly.\n")
+    logger.info("\n[+] Project 31 Phase 2 pipeline finished cleanly.\n")
 
 
 if __name__ == "__main__":
